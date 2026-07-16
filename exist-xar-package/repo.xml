@@ -1,0 +1,13 @@
+<meta xmlns="http://exist-db.org/xquery/repo">
+    <description>HBCI and FinTS Online Banking module</description>
+    <author>hbci4java</author>
+    <website>https://github.com/hbci4j/hbci4java</website>
+    <status>alpha</status>
+    <license>GNU Lesser General Public License v2.1</license>
+    <copyright>true</copyright>
+    <type>library</type>
+    <target>hbci4java</target>
+    <prepare>pre-install.xql</prepare>
+    <finish>post-install.xql</finish>
+    <deployed>2020-08-22T10:22:24.714+02:00</deployed>
+</meta>

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://expath.org/ns/pkg" name="http://exist-db.org/library/hbci4java" abbrev="hbci4java" version="0.5.4" spec="1.0">
+    <title>HBCI and FinTS Online Banking module</title>
+    <dependency package="http://exist-db.org/apps/shared"/>
+    <dependency processor="http://exist-db.org" semver-min="3.0.3"/>
+</package>
