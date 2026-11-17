@@ -79,6 +79,7 @@ public class OnlineBankingAccount {
     String MessageUrl; 
     String ResponseUrl; 
     String AuthHeaderValue;
+    String Mode;
     Boolean Debug;
 
     /*
@@ -377,7 +378,7 @@ Geschäftsvorfall-Codes:
 
     public OnlineBankingAccount (String Country, Integer Port, String Blz, String Bic, String Iban, String BankAccount, String BankUserID, String CustomerID,
         String Secret, Integer AuthType, String Pin, String PassportURL, 
-        String MessageUrl, String ResponseUrl, String AuthHeaderValue, Boolean Debug){
+        String MessageUrl, String ResponseUrl, String AuthHeaderValue, String Mode, Boolean Debug){
 
         this.Country = Country;
         this.Port = Port;
@@ -394,12 +395,26 @@ Geschäftsvorfall-Codes:
         this.MessageUrl = MessageUrl;
         this.ResponseUrl = ResponseUrl;
         this.AuthHeaderValue = AuthHeaderValue;
+        this.Mode = (Mode == null || Mode.trim().length() == 0) ? "interactive" : Mode.trim().toLowerCase();
         this.Debug = Debug;
 
         if (MessageUrl == null || ResponseUrl == null)
             messageHandler = new ConsoleMessageHandler();
         else
             messageHandler = new HttpMessageHandler(MessageUrl, ResponseUrl, AuthHeaderValue);
+    }
+
+    private boolean isAutoMode() {
+        return "auto".equalsIgnoreCase(Mode);
+    }
+
+    private String requestTan(String challengeXml, String challengeType) {
+        messageHandler.sendChallenge(challengeXml);
+        if (isAutoMode()) {
+            throw new ScaRequiredException(challengeType, challengeXml);
+        }
+        String tan = messageHandler.readMessage();
+        return tan;
     } 
 
 
@@ -417,9 +432,9 @@ Geschäftsvorfall-Codes:
         // In "props" koennen optional Kernel-Parameter abgelegt werden, die in der
         // Klasse
         // org.kapott.hbci.manager.HBCIUtils (oben im Javadoc) beschrieben sind.
-        //Properties props = new Properties();
-        //HBCIUtils.init(props, new MyHBCICallback());
-        HBCIUtils.init(null,null,new MyHBCICallback());
+        Properties props = new Properties();
+        // hbci4j 4.x: init(Properties, HBCICallback)
+        HBCIUtils.init(props, new MyHBCICallback());
 
         /*
   private final static Map<Integer,String> settings = new HashMap<Integer,String>()
@@ -460,13 +475,17 @@ hbciHandle = new HBCIHandler(HBCIUtils.getParam("client.passport.hbciversion.def
         // unten).
         // Wir speichern die Datei der Einfachheit halber im aktuellen Verzeichnis.
         final File passportFile = new File(PassportURL);
-        System.out.println("### passportURL '" + PassportURL + "'");
+        File parent = passportFile.getParentFile();
+        if (parent != null && !parent.exists()) {
+            parent.mkdirs();
+        }
+        System.out.println("### passportURL '" + PassportURL + "' mode=" + Mode);
 
         // Wir setzen die Kernel-Parameter zur Laufzeit. Wir koennten sie alternativ
         // auch oben in "props" setzen.
         HBCIUtils.setParam("client.passport.default", "PinTan"); // Legt als Verfahren PIN/TAN fest.
         HBCIUtils.setParam("client.passport.PinTan.init", "1"); // Stellt sicher, dass der Passport initialisiert wird
-
+        HBCIUtils.setParam("client.passport.PinTan.filename", passportFile.getAbsolutePath());
 
         // Erzeugen des Passport-Objektes.
         // HBCIPassportDDV (für Chipkarte), HBCIPassportPinTan (für Zugang über das PIN/TAN-Verfahren), HBCIPassportRDHNew für Zugang über RDH mit Datei
@@ -629,6 +648,8 @@ System.err.println("Konto: " + konto);
                     return error(passport, handle, result.toString());
 
             } /* konto given */
+        } catch (ScaRequiredException sca) {
+            throw sca;
         } catch (Exception e) {
             //System.err.println("ERROR: Could not receice transaction data for account. " + e.toString());
             sb.append(e.toString());
@@ -980,7 +1001,7 @@ System.err.println("Konto: " + konto);
     *
     */
     public String arangeBankTransfer(String RecipientCountry, String RecipientBic, String RecipientIban, String RecipientName, Date Date, double CurrencyAmount, String CurrencyUnit, String UsageText) {
-
+      try {
         HBCIJob job = handle.newJob("UebSEPA"); //Ueb
 
         Konto kontoSrc = new Konto();
@@ -998,9 +1019,8 @@ System.err.println("Konto: " + konto);
         Konto kontoDst = new Konto();
         kontoDst.name = RecipientName;
         kontoDst.iban = RecipientIban;
-        kontoDst.blz = RecipientBic;
+        kontoDst.bic = RecipientBic;
         kontoDst.country = RecipientCountry;
-        //kontoDst.bic = RecipientBic;
         //kontoDst.bic = payment.getReceiverBic();
         //job.setParam("dst", i, dst);
 
@@ -1054,7 +1074,15 @@ System.out.println("DEBUG Status:" + status);
         // Status eines konkreten Jobs
 System.out.println("DEBUG: Jobstatus:" + job.getJobResult().getJobStatus());
 
-        return "" + job.getJobResult().getJobStatus();
+        String jobStatus = "" + job.getJobResult().getJobStatus();
+        boolean ok = status.isOK() && job.getJobResult().isOK();
+        return "<TransferResult ok=\"" + ok + "\"><Status>" + stringValue(jobStatus)
+                + "</Status><ExecStatus>" + stringValue(status.toString()) + "</ExecStatus></TransferResult>";
+      } catch (ScaRequiredException sca) {
+        throw sca;
+      } catch (Exception e) {
+        return "<TransferResult ok=\"false\"><Error>" + stringValue(e.toString()) + "</Error></TransferResult>";
+      }
     }
 
 
@@ -1335,28 +1363,13 @@ System.out.println("DEBUG: Jobstatus:" + job.getJobResult().getJobStatus());
                 // User eingegebene TAN zurueckliefern (nachdem dieser die Grafik
                 // fotografiert und die App ihm die TAN angezeigt hat)
                 case NEED_PT_PHOTOTAN:
-                    messageHandler.sendMessage("NEED_PT_PHOTOTAN - Phototan wird benoetigt: " + reason);
-
-                    // Die Klasse "MatrixCode" kann zum Parsen der Daten verwendet werden
                     try {
-                        // MatrixCode code = new MatrixCode(retData.toString());
-
-                        // Liefert den Mime-Type der grafik (i.d.R. "image/png").
-                        // String type = code.getMimetype();
-
-                        // Der Stream enthaelt jetzt die Binaer-Daten des Bildes
-                        // InputStream stream = new ByteArrayInputStream(code.getImage());
-
-                        // .... Hier Dialog mit der Grafik anzeigen und User-Eingabe der TAN
-                        // Die Variable "msg" aus der Methoden-Signatur enthaelt uebrigens
-                        // den bankspezifischen Text mit den Instruktionen fuer den User.
-                        // Der Text aus "msg" sollte daher im Dialog dem User angezeigt
-                        // werden.
-                        String tan = null;
-                        if (tan == null)
-                            tan = messageHandler.readMessage();
-                        messageHandler.sendMessage("PT_PHOTOTAN = " + tan);
+                        String challenge = ChallengeMedia.fromPhoto(retData.toString(), msg);
+                        String tan = requestTan(challenge, "photo");
+                        messageHandler.sendMessage("PT_PHOTOTAN = ****");
                         retData.replace(0, retData.length(), tan);
+                    } catch (ScaRequiredException sca) {
+                        throw sca;
                     } catch (Exception e) {
                         messageHandler.sendMessage("HBCI-Exception: " + e.toString());
                         throw new HBCI_Exception(e);
@@ -1364,29 +1377,13 @@ System.out.println("DEBUG: Jobstatus:" + job.getJobResult().getJobStatus());
                     break;
 
                 case NEED_PT_QRTAN:
-                    messageHandler.sendMessage("NEED_PT_QRTAN - QR-Tan wird benoetigt: " + msg + " " + retData.toString());
-
-                    // Die Klasse "QRCode" kann zum Parsen der Daten verwendet werden
                     try {
-                        // QRCode code = new QRCode(retData.toString(),msg);
-
-                        // Der Stream enthaelt jetzt die Binaer-Daten des Bildes
-                        // InputStream stream = new ByteArrayInputStream(code.getImage());
-
-                        // .... Hier Dialog mit der Grafik anzeigen und User-Eingabe der TAN
-                        // Die Variable "msg" aus der Methoden-Signatur enthaelt uebrigens
-                        // den bankspezifischen Text mit den Instruktionen fuer den User.
-                        // Der Text aus "msg" sollte daher im Dialog dem User angezeigt
-                        // werden. Da Sparkassen den eigentlichen Bild u.U. auch in msg verpacken,
-                        // sollte zur Anzeige nicht der originale Text verwendet werden sondern
-                        // der von QRCode - dort ist dann die ggf. enthaltene Base64-codierte QR-Grafik
-                        // entfernt
-                        // msg = code.getMessage();
-                        String tan = null;
-                        if (tan == null)
-                            tan = messageHandler.readMessage();
-                        messageHandler.sendMessage("PT_QRTAN = " + tan);
+                        String challenge = ChallengeMedia.fromQr(retData.toString(), msg);
+                        String tan = requestTan(challenge, "qr");
+                        messageHandler.sendMessage("PT_QRTAN = ****");
                         retData.replace(0, retData.length(), tan);
+                    } catch (ScaRequiredException sca) {
+                        throw sca;
                     } catch (Exception e) {
                         messageHandler.sendMessage("HBCI-Exception: " + e.toString());
                         throw new HBCI_Exception(e);
@@ -1422,46 +1419,22 @@ System.out.println("DEBUG: Jobstatus:" + job.getJobResult().getJobStatus());
                     break;
 
                 // HBCI4Java benoetigt die TAN per smsTAN/chipTAN/weiteren TAN-Verfahren
-                case NEED_PT_TAN:
-                    messageHandler.sendMessage(
-                            "NEED_PT_TAN - TAN für smsTAN/chipTAN wird benoetigt: " + msg + " " + retData.toString());
-
-                    // Wenn per "retData" Daten uebergeben wurden, dann enthalten diese
-                    // den fuer chipTAN optisch zu verwendenden Flickercode.
-                    // Falls nicht, ist es eine TAN-Abfrage, fuer die keine weiteren
-                    // Parameter benoetigt werden (z.Bsp. beim smsTAN-Verfahren)
-
-                    // Die Variable "msg" aus der Methoden-Signatur enthaelt uebrigens
-                    // den bankspezifischen Text mit den Instruktionen fuer den User.
-                    // Der Text aus "msg" sollte daher im Dialog dem User angezeigt
-                    // werden.
-
+                case NEED_PT_TAN: {
                     String flicker = retData.toString();
+                    String challenge;
+                    String challengeType;
                     if (flicker != null && flicker.length() > 0) {
-                        // Ist chipTAN optisch. Es muss ein animierter Barcode angezeigt
-                        // werden. Hierfuer kann die Hilfsklasse "FlickerRenderer" verwendet
-                        // werden. Diese enthalt bereits das Parsen. Es muss lediglich die
-                        // Methode "paint" ueberschrieben werden.
-                        // FlickerRenderer renderer = new FlickerRenderer(flicker);
-
-                        // Hier TAN-Abfrage mit dem animierten Barcode anzeigen sowie
-                        // Eingabefeld fuer die TAN
-                        // String tan = "";
-                        messageHandler.sendMessage("Bitte chipTAN eingeben:");
-                        String tan = messageHandler.readMessage(); 
-                        messageHandler.sendMessage("PT_TAN = " + tan);
-                        retData.replace(0, retData.length(), tan);
+                        challenge = ChallengeMedia.fromFlicker(flicker, msg);
+                        challengeType = "flicker";
                     } else {
-                        // Ist smsTAN, iTAN, o.ae.
-                        // Dialog zur TAN-Eingabe anzeigen mit dem Text aus "msg".
-                        // String tan = null;
-                        messageHandler.sendMessage("Bitte mTAN / iTAN eingeben:");
-                        String tan = messageHandler.readMessage();
-                        messageHandler.sendMessage("PT_TAN = " + tan);
-                        retData.replace(0, retData.length(), tan);
+                        challenge = ChallengeMedia.fromText(msg == null ? "Bitte TAN eingeben" : msg);
+                        challengeType = "text";
                     }
-
+                    String tan = requestTan(challenge, challengeType);
+                    messageHandler.sendMessage("PT_TAN = ****");
+                    retData.replace(0, retData.length(), tan);
                     break;
+                }
 
                 // Beim Verfahren smsTAN ist es moeglich, mehrere Handynummern mit
                 // Aliasnamen bei der Bank zu hinterlegen. Auch wenn nur eine Handy-
@@ -1511,14 +1484,9 @@ System.out.println("DEBUG: Jobstatus:" + job.getJobResult().getJobStatus());
             }
         }
 
-        /**
-         * @see org.kapott.hbci.callback.HBCICallback#status(org.kapott.hbci.passport.HBCIPassport,
-         *      int, java.lang.Object[])
-         */
         @Override
         public void status(HBCIPassport passport, int statusTag, Object[] o) {
-            // So aehnlich wie log(String,int,Date,StackTraceElement) jedoch fuer
-            // Status-Meldungen.
+            // status notifications from hbci4j
         }
 
     }

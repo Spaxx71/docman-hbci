@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <package xmlns="http://exist-db.org/ns/expath-pkg">
-    <jar>hbci4j-core-3.1.64.jar</jar>
-    <jar>hbci4j-existdb-0.5.jar</jar>
+    <jar>hbci4j-core-4.1.17.jar</jar>
+    <jar>hbci4j-existdb-0.6.jar</jar>
     <java>
-        <namespace>http://exist-db.org/hbci4java/existdb</namespace>
+        <namespace>http://exist-db.org/library/hbci4java</namespace>
         <class>hbci4java.existdb.OnlineBankingModule</class>
     </java>
 </package>

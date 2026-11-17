@@ -24,7 +24,8 @@ public class OnlineBankingModule extends AbstractInternalModule {
 		new FunctionDef(OnlineBankingFunctionInitialize.signature, OnlineBankingFunctionInitialize.class),
 		new FunctionDef(OnlineBankingFunctionTransactions.signature, OnlineBankingFunctionTransactions.class),
 		new FunctionDef(OnlineBankingFunctionBankTransfer.signature, OnlineBankingFunctionBankTransfer.class),
-		new FunctionDef(OnlineBankingFunctionClose.signature, OnlineBankingFunctionClose.class)
+		new FunctionDef(OnlineBankingFunctionClose.signature, OnlineBankingFunctionClose.class),
+		new FunctionDef(OnlineBankingFunctionResetPassport.signature, OnlineBankingFunctionResetPassport.class)
 	};
 		
 	public OnlineBankingModule(Map<String, List<? extends Object>> parameters) throws XPathException {
@@ -44,7 +45,7 @@ public class OnlineBankingModule extends AbstractInternalModule {
 	}
 
 	public String getReleaseVersion() {
-		return "0.5.5";
+		return "0.6.0";
 	}
 
 }

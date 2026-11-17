@@ -1,8 +1,8 @@
 <meta xmlns="http://exist-db.org/xquery/repo">
     <description>HBCI and FinTS Online Banking module</description>
     <author>hbci4java</author>
-    <website>https://github.com/hbci4j/hbci4java</website>
-    <status>alpha</status>
+    <website>https://github.com/Spaxx71/docman-hbci</website>
+    <status>beta</status>
     <license>GNU Lesser General Public License v2.1</license>
     <copyright>true</copyright>
     <type>library</type>

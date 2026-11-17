@@ -5,40 +5,14 @@ import java.io.Console;
 import java.util.Date;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
-import java.util.List;
-import java.util.Properties;
-import java.util.Map;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
-
-import org.kapott.hbci.GV.HBCIJob;
-import org.kapott.hbci.GV_Result.GVRKUms;
-import org.kapott.hbci.GV_Result.GVRKUms.UmsLine;
-import org.kapott.hbci.GV_Result.GVRSaldoReq;
-import org.kapott.hbci.callback.AbstractHBCICallback;
-import org.kapott.hbci.exceptions.HBCI_Exception;
-import org.kapott.hbci.manager.BankInfo;
-import org.kapott.hbci.manager.HBCIHandler;
-import org.kapott.hbci.manager.HBCIUtils;
-import org.kapott.hbci.manager.HBCIVersion;
-import org.kapott.hbci.passport.AbstractHBCIPassport;
-import org.kapott.hbci.passport.HBCIPassport;
-import org.kapott.hbci.status.HBCIExecStatus;
-import org.kapott.hbci.structures.Konto;
-import org.kapott.hbci.structures.Value;
-
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.math.BigInteger;
-import java.util.Base64;
 import java.util.Calendar;
+import java.util.Map;
+import java.util.LinkedHashMap;
+import java.util.Base64;
 import java.nio.charset.StandardCharsets;
 
-
-
 /**
- * Container zum Verwalten und Steuern aller Accounts.
- * 
+ * Container for managing online banking accounts.
  */
 public class OnlineBanking {
 
@@ -46,19 +20,21 @@ public class OnlineBanking {
 
     private static final java.text.SimpleDateFormat isoDateFormat = new java.text.SimpleDateFormat("yyyy-MM-dd");
 
-    private static final java.text.SimpleDateFormat isoDateTimeFormat = new java.text.SimpleDateFormat(
-            "yyyy-MM-dd'T'hh:mm:ss");
-
-    public OnlineBanking () {
-
+    public OnlineBanking() {
     }
 
-    /**
-     * Main-Methode.
-     * 
-     * @param args
-     * @throws Exception
-     */
+    public static String defaultPassportPath(String accountId) {
+        String base = System.getProperty("exist.home");
+        if (base == null || base.length() == 0) {
+            base = System.getProperty("user.home");
+        }
+        File dir = new File(base, "docman-passports");
+        if (!dir.exists()) {
+            dir.mkdirs();
+        }
+        return new File(dir, "passport_" + accountId + ".dat").getAbsolutePath();
+    }
+
     public static void main(String[] args) throws Exception {
         Calendar cal = Calendar.getInstance();
 
@@ -79,106 +55,116 @@ public class OnlineBanking {
         String pPassword = null;
 
         String pAuthHeaderValue = "";
-        if (args.length == 8) {
+        if (args.length >= 11) {
             pMessageUrl = args[7];
-		    pResponseUrl = args[8];
+            pResponseUrl = args[8];
             pUsername = args[9];
             pPassword = args[10];
             String auth = pUsername + ":" + pPassword;
-		    byte[] encodedAuth = Base64.getEncoder().encode(auth.getBytes(StandardCharsets.UTF_8));
+            byte[] encodedAuth = Base64.getEncoder().encode(auth.getBytes(StandardCharsets.UTF_8));
             pAuthHeaderValue = "Basic " + new String(encodedAuth);
         }
 
         cal.setTime(new Date());
         cal.add(Calendar.DAY_OF_MONTH, -15);
         Date pStartDate = cal.getTime();
-        //String startDate = isoDateFormat.format(pStartDate);
         cal.add(Calendar.DAY_OF_MONTH, +14);
         Date pEndDate = cal.getTime();
-        //String EndDate = isoDateFormat.format(pEndDate);
 
-        
         Console console = System.console();
-        // BankUser = console.readLine("BankUser:");
-        // BankAccount = console.readLine("BankAccount:");
-        // Blz = console.readLine("BLZ:");
-        // Port = console.readLine("Port:");
-        // StartDate = console.readLine("Begin Datum (YYYY-MM-TT):");
-        // EndDate = console.readLine("Ende Datum (YYYY-MM-TT):");
         pPin = console.readLine("Bitte PIN eingeben:");
 
-        OnlineBanking myBanking = new OnlineBanking();
-        System.out.println(myBanking.initialize("Account1","DE",pPort,pBlz,pBic,pIban,pBankAccount,pBankUserID,pCustomerID,"Geheim",pAuthType,pPin,pMessageUrl,pResponseUrl,pAuthHeaderValue,true));
-        System.out.println(myBanking.getTransactions("Account1",pStartDate,pEndDate));
-
-        DateFormat df1 = new SimpleDateFormat("yyyy-MM-dd");
+        System.out.println(initialize("Account1", "DE", pPort, pBlz, pBic, pIban, pBankAccount, pBankUserID,
+                pCustomerID, "Geheim", pAuthType, pPin, pMessageUrl, pResponseUrl, pAuthHeaderValue,
+                defaultPassportPath("Account1"), "interactive", true));
+        System.out.println(getTransactions("Account1", pStartDate, pEndDate));
     }
 
-    /**
-     * initialize
-     * 
-     * @param args
-     * @throws Exception
-     */
-    public static String initialize (String AccountID, String Country, Integer Port, String Blz, 
-        String Bic, String Iban,
-        String BankAccount, String BankUserID, String CustomerID,
-        String Secret, Integer AuthType, String Pin, 
-        String MessageUrl, String ResponseUrl, String AuthHeaderValue, Boolean Debug) throws Exception {
+    public static String initialize(String AccountID, String Country, Integer Port, String Blz,
+            String Bic, String Iban, String BankAccount, String BankUserID, String CustomerID, String Secret,
+            Integer AuthType, String Pin, String MessageUrl, String ResponseUrl, String AuthHeaderValue,
+            String PassportPath, String Mode, Boolean Debug) throws Exception {
 
-        if (accountMap.get(AccountID) != null) 
+        if (accountMap.get(AccountID) != null) {
             return "Account ID '" + AccountID + "' already exist.";
-        else {
-            OnlineBankingAccount myAccount = new OnlineBankingAccount (Country, Port, Blz, Bic, Iban, BankAccount, BankUserID, CustomerID,
-                Secret, AuthType, Pin, "/tmp/passport_"+AccountID+".dat", MessageUrl, ResponseUrl, AuthHeaderValue, Debug);
-            accountMap.put(AccountID, myAccount);
-            return myAccount.initialize();
         }
+
+        String passport = PassportPath;
+        if (passport == null || passport.trim().length() == 0) {
+            passport = defaultPassportPath(AccountID);
+        }
+        String mode = Mode;
+        if (mode == null || mode.trim().length() == 0) {
+            mode = "interactive";
+        }
+
+        OnlineBankingAccount myAccount = new OnlineBankingAccount(Country, Port, Blz, Bic, Iban, BankAccount,
+                BankUserID, CustomerID, Secret, AuthType, Pin, passport, MessageUrl, ResponseUrl, AuthHeaderValue,
+                mode, Debug);
+        accountMap.put(AccountID, myAccount);
+        return myAccount.initialize();
     }
-    
-    /**
-     * getTransactions
-     * 
-     * @param args
-     * @throws Exception
-     */
+
     public static String getTransactions(String AccountID, Date StartDate, Date EndDate) throws Exception {
-        OnlineBankingAccount myAccount = (OnlineBankingAccount)accountMap.get(AccountID);
-        if (myAccount == null) 
+        OnlineBankingAccount myAccount = (OnlineBankingAccount) accountMap.get(AccountID);
+        if (myAccount == null) {
             return "Account ID '" + AccountID + "' does not exist.";
-        else
-            return myAccount.getTransactions(StartDate, EndDate);
-    }
-
-    /**
-     * createTransfer
-     * 
-     * @param args
-     * @throws Exception
-     */
-    public static String arangeBankTransfer(String AccountID, String RecipientCountry, String RecipientBic, String RecipientIban, String RecipientName, Date Date, double CurrencyAmount, String CurrencyUnit, String UsageText) throws Exception {
-        OnlineBankingAccount myAccount = (OnlineBankingAccount)accountMap.get(AccountID);
-        if (myAccount == null) 
-            return "Account ID '" + AccountID + "' does not exist.";
-        else
-            return myAccount.arangeBankTransfer(RecipientCountry, RecipientBic, RecipientIban, RecipientName, Date, CurrencyAmount, CurrencyUnit, UsageText);
-    }
-
-    /**
-     * close
-     * 
-     * @param args
-     * @throws Exception
-     */
-    public static String close(String AccountID) throws Exception {
-        OnlineBankingAccount myAccount = (OnlineBankingAccount)accountMap.get(AccountID);
-        if (myAccount == null) 
-            return "Account ID '" + AccountID + "' does not exist.";
-        else {
-            accountMap.remove(AccountID);
-            myAccount.close();
         }
+        try {
+            return myAccount.getTransactions(StartDate, EndDate);
+        } catch (ScaRequiredException sca) {
+            return "<Error code=\"SCA_REQUIRED\" type=\"" + ChallengeMedia.escapeXml(sca.getChallengeType())
+                    + "\">" + sca.getChallengeXml() + "</Error>";
+        }
+    }
 
+    public static String arangeBankTransfer(String AccountID, String RecipientCountry, String RecipientBic,
+            String RecipientIban, String RecipientName, Date Date, double CurrencyAmount, String CurrencyUnit,
+            String UsageText) throws Exception {
+        OnlineBankingAccount myAccount = (OnlineBankingAccount) accountMap.get(AccountID);
+        if (myAccount == null) {
+            return "Account ID '" + AccountID + "' does not exist.";
+        }
+        try {
+            return myAccount.arangeBankTransfer(RecipientCountry, RecipientBic, RecipientIban, RecipientName, Date,
+                    CurrencyAmount, CurrencyUnit, UsageText);
+        } catch (ScaRequiredException sca) {
+            return "<Error code=\"SCA_REQUIRED\" type=\"" + ChallengeMedia.escapeXml(sca.getChallengeType())
+                    + "\">" + sca.getChallengeXml() + "</Error>";
+        }
+    }
+
+    public static String close(String AccountID) throws Exception {
+        OnlineBankingAccount myAccount = (OnlineBankingAccount) accountMap.get(AccountID);
+        if (myAccount == null) {
+            return "Account ID '" + AccountID + "' does not exist.";
+        }
+        accountMap.remove(AccountID);
+        myAccount.close();
         return "Account ID '" + AccountID + "' has been closed.";
+    }
+
+    public static String resetPassport(String AccountID, String PassportPath) throws Exception {
+        closeQuiet(AccountID);
+        String path = PassportPath;
+        if (path == null || path.trim().length() == 0) {
+            path = defaultPassportPath(AccountID);
+        }
+        File f = new File(path);
+        boolean deleted = false;
+        if (f.exists()) {
+            deleted = f.delete();
+        }
+        return "<ResetPassport account=\"" + ChallengeMedia.escapeXml(AccountID) + "\" path=\""
+                + ChallengeMedia.escapeXml(path) + "\" deleted=\"" + deleted + "\"/>";
+    }
+
+    private static void closeQuiet(String AccountID) {
+        try {
+            if (accountMap.get(AccountID) != null) {
+                close(AccountID);
+            }
+        } catch (Exception ignored) {
+        }
     }
 }

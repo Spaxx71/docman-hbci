@@ -1,35 +1,23 @@
-#!/bin/zsh
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")"
 
+CORE=hbci4j-core-4.1.17.jar
+EXIST_CORE=exist-distribution-5.2.0/lib/exist-core-5.2.0.jar
+XMLDB=exist-distribution-5.2.0/lib/xmldb-api-1.7.0.jar
+CLASSPATH=".:${CORE}:${EXIST_CORE}:${XMLDB}"
 
-# Note: updating the version needs to be also done in /exist-xar-package/exist.xml
-HOME=`pwd`/hbci4java/build/
-export CLASSPATH=.:hbci4j-core-3.1.85.jar:./exist-distribution-5.2.0/lib/exist-core-5.2.0.jar:./exist-distribution-5.2.0/lib/xmldb-api-1.7.0.jar:./jaxb/jaxb-api-2.4.0.jar:./jaxb/jaxb-impl-2.3.6.jar:./jaxb/jaxb-core-3.0.2.jar:./jaxb/activation-1.1.1.jar
-#export JDK_JAVA_OPTIONS='--add-modules=javax.xml.bind'
+rm -f hbci4java/existdb/*.class
+javac --release 8 -cp "$CLASSPATH" hbci4java/existdb/*.java
+jar cfe hbci4j-existdb-0.6.jar hbci4java.existdb.OnlineBanking hbci4java/existdb/*.class
 
-cd $HOME
+mkdir -p exist-xar-package/content exist-xar-package/build
+cp -f "$CORE" exist-xar-package/content/hbci4j-core-4.1.17.jar
+cp -f hbci4j-existdb-0.6.jar exist-xar-package/content/hbci4j-existdb-0.6.jar
 
-# cleanup
-rm $HOME/hbci4j-existdb-0.5.jar
-rm $HOME/hbci4java/existdb/*.class
-rm $HOME/exist-xar-package/content/*.jar
-
-
-echo --- "building hbci4j:"
-javac -cp $CLASSPATH -source 8 -target 8 -Xlint:unchecked  hbci4java/existdb/*.java
-
-jar cfe hbci4j-existdb-0.5.jar hbci4java.existdb.OnlineBanking ./hbci4java/existdb/*.class
-
-echo --- "show content of newly build jar:"
-jar tf hbci4j-existdb-0.5.jar
-
-echo --- "build exist package:"
-
-# build exist .xar package
-cp hbci4j-existdb-0.5.jar ./exist-xar-package/content
-cp hbci4j-core-3.1.85.jar ./exist-xar-package/content
-
-# -0 
-cd exist-xar-package
-zip -r -0 "../../hbci4java-0.5.xar" ./* -x "*.DS_Store"
-
-echo "package building done."
+(
+  cd exist-xar-package
+  rm -f build/hbci4java-0.6.0.xar
+  zip -r build/hbci4java-0.6.0.xar expath-pkg.xml exist.xml repo.xml pre-install.xql post-install.xql build.xml content
+)
+echo "Created exist-xar-package/build/hbci4java-0.6.0.xar"
