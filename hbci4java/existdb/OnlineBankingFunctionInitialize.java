@@ -74,8 +74,20 @@ public class OnlineBankingFunctionInitialize extends BasicFunction {
 					pBankAccount, pBankUserID, pCustomerID, pSecret, pAuthType, pPin, pMessageURL, pResponseURL,
 					pAuthentication, pPassportPath, pMode, pDebug);
 			result.add(new StringValue(bankStatement));
+		} catch (ScaRequiredException sca) {
+			result.add(new StringValue("<Error code=\"SCA_REQUIRED\" type=\""
+					+ ChallengeMedia.escapeXml(sca.getChallengeType()) + "\">" + sca.getChallengeXml()
+					+ "</Error>"));
 		} catch (Exception e) {
-			result.add(new StringValue("OnlineBanking.initialize failed: " + e.toString()));
+			Throwable root = e;
+			while (root.getCause() != null && root.getCause() != root) {
+				root = root.getCause();
+			}
+			String detail = e.toString();
+			if (root != e) {
+				detail = detail + " | cause: " + root.toString();
+			}
+			result.add(new StringValue("Es ist ein unerwarteter Fehler beim Aufruf der Funktion aufgetreten: " + detail));
 		}
 		return result;
 	}

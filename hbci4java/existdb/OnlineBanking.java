@@ -85,63 +85,95 @@ public class OnlineBanking {
             Integer AuthType, String Pin, String MessageUrl, String ResponseUrl, String AuthHeaderValue,
             String PassportPath, String Mode, Boolean Debug) throws Exception {
 
-        if (accountMap.get(AccountID) != null) {
-            return "Account ID '" + AccountID + "' already exist.";
-        }
+        synchronized (OnlineBankingAccount.HBCI_LOCK) {
+            // Re-init must be idempotent: a previous QR/TAN wait that timed out leaves
+            // the AccountID in the map and otherwise blocks every retry with "already exist".
+            if (accountMap.get(AccountID) != null) {
+                System.out.println("### re-initialize: closing stale AccountID '" + AccountID + "'");
+                closeQuiet(AccountID);
+            }
 
-        String passport = PassportPath;
-        if (passport == null || passport.trim().length() == 0) {
-            passport = defaultPassportPath(AccountID);
-        }
-        String mode = Mode;
-        if (mode == null || mode.trim().length() == 0) {
-            mode = "interactive";
-        }
+            String passport = PassportPath;
+            if (passport == null || passport.trim().length() == 0) {
+                passport = defaultPassportPath(AccountID);
+            }
+            String mode = Mode;
+            if (mode == null || mode.trim().length() == 0) {
+                mode = "interactive";
+            }
 
-        OnlineBankingAccount myAccount = new OnlineBankingAccount(Country, Port, Blz, Bic, Iban, BankAccount,
-                BankUserID, CustomerID, Secret, AuthType, Pin, passport, MessageUrl, ResponseUrl, AuthHeaderValue,
-                mode, Debug);
-        accountMap.put(AccountID, myAccount);
-        return myAccount.initialize();
+            OnlineBankingAccount myAccount = new OnlineBankingAccount(Country, Port, Blz, Bic, Iban, BankAccount,
+                    BankUserID, CustomerID, Secret, AuthType, Pin, passport, MessageUrl, ResponseUrl, AuthHeaderValue,
+                    mode, Debug);
+            accountMap.put(AccountID, myAccount);
+            try {
+                return myAccount.initialize();
+            } catch (ScaRequiredException sca) {
+                accountMap.remove(AccountID);
+                try {
+                    myAccount.close();
+                } catch (Exception ignored) {
+                }
+                return "<Error code=\"SCA_REQUIRED\" type=\"" + ChallengeMedia.escapeXml(sca.getChallengeType())
+                        + "\">" + sca.getChallengeXml() + "</Error>";
+            } catch (Exception e) {
+                accountMap.remove(AccountID);
+                try {
+                    myAccount.close();
+                } catch (Exception ignored) {
+                }
+                throw e;
+            }
+        }
     }
 
     public static String getTransactions(String AccountID, Date StartDate, Date EndDate) throws Exception {
-        OnlineBankingAccount myAccount = (OnlineBankingAccount) accountMap.get(AccountID);
-        if (myAccount == null) {
-            return "Account ID '" + AccountID + "' does not exist.";
-        }
-        try {
-            return myAccount.getTransactions(StartDate, EndDate);
-        } catch (ScaRequiredException sca) {
-            return "<Error code=\"SCA_REQUIRED\" type=\"" + ChallengeMedia.escapeXml(sca.getChallengeType())
-                    + "\">" + sca.getChallengeXml() + "</Error>";
+        synchronized (OnlineBankingAccount.HBCI_LOCK) {
+            OnlineBankingAccount myAccount = (OnlineBankingAccount) accountMap.get(AccountID);
+            if (myAccount == null) {
+                return "Account ID '" + AccountID + "' does not exist.";
+            }
+            try {
+                return myAccount.getTransactions(StartDate, EndDate);
+            } catch (ScaRequiredException sca) {
+                // Keep session only while waiting inside MessageHandler; once SCA is
+                // surfaced as result the caller must be able to start fresh.
+                closeQuiet(AccountID);
+                return "<Error code=\"SCA_REQUIRED\" type=\"" + ChallengeMedia.escapeXml(sca.getChallengeType())
+                        + "\">" + sca.getChallengeXml() + "</Error>";
+            }
         }
     }
 
     public static String arangeBankTransfer(String AccountID, String RecipientCountry, String RecipientBic,
             String RecipientIban, String RecipientName, Date Date, double CurrencyAmount, String CurrencyUnit,
             String UsageText) throws Exception {
-        OnlineBankingAccount myAccount = (OnlineBankingAccount) accountMap.get(AccountID);
-        if (myAccount == null) {
-            return "Account ID '" + AccountID + "' does not exist.";
-        }
-        try {
-            return myAccount.arangeBankTransfer(RecipientCountry, RecipientBic, RecipientIban, RecipientName, Date,
-                    CurrencyAmount, CurrencyUnit, UsageText);
-        } catch (ScaRequiredException sca) {
-            return "<Error code=\"SCA_REQUIRED\" type=\"" + ChallengeMedia.escapeXml(sca.getChallengeType())
-                    + "\">" + sca.getChallengeXml() + "</Error>";
+        synchronized (OnlineBankingAccount.HBCI_LOCK) {
+            OnlineBankingAccount myAccount = (OnlineBankingAccount) accountMap.get(AccountID);
+            if (myAccount == null) {
+                return "Account ID '" + AccountID + "' does not exist.";
+            }
+            try {
+                return myAccount.arangeBankTransfer(RecipientCountry, RecipientBic, RecipientIban, RecipientName, Date,
+                        CurrencyAmount, CurrencyUnit, UsageText);
+            } catch (ScaRequiredException sca) {
+                closeQuiet(AccountID);
+                return "<Error code=\"SCA_REQUIRED\" type=\"" + ChallengeMedia.escapeXml(sca.getChallengeType())
+                        + "\">" + sca.getChallengeXml() + "</Error>";
+            }
         }
     }
 
     public static String close(String AccountID) throws Exception {
-        OnlineBankingAccount myAccount = (OnlineBankingAccount) accountMap.get(AccountID);
-        if (myAccount == null) {
-            return "Account ID '" + AccountID + "' does not exist.";
+        synchronized (OnlineBankingAccount.HBCI_LOCK) {
+            OnlineBankingAccount myAccount = (OnlineBankingAccount) accountMap.get(AccountID);
+            if (myAccount == null) {
+                return "Account ID '" + AccountID + "' does not exist.";
+            }
+            accountMap.remove(AccountID);
+            myAccount.close();
+            return "Account ID '" + AccountID + "' has been closed.";
         }
-        accountMap.remove(AccountID);
-        myAccount.close();
-        return "Account ID '" + AccountID + "' has been closed.";
     }
 
     public static String resetPassport(String AccountID, String PassportPath) throws Exception {

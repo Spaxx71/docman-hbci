@@ -6,6 +6,7 @@ import java.util.Date;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.Locale;
 import java.util.Properties;
 import java.util.HashMap;
 
@@ -50,6 +51,13 @@ Liste aller GV https://github.com/willuhn/hbci4java/tree/master/src/org/kapott/h
 public class OnlineBankingAccount {
 
     /**
+     * eXist runs FinTS calls on many HTTP threads. hbci4j 4.x keeps message
+     * bundles in thread/client state – global init/done races cause
+     * ResourceBundle NPEs. Serialize kernel use and prefer initThread.
+     */
+    static final Object HBCI_LOCK = new Object();
+
+    /**
      * Dies ist der Message Handler.
      */
     private MessageHandler messageHandler = null;
@@ -58,6 +66,9 @@ public class OnlineBankingAccount {
      * Die zu verwendende HBCI-Version.
      */
     private final static HBCIVersion VERSION = HBCIVersion.HBCI_300;
+
+    private ClassLoader previousContextClassLoader = null;
+    private boolean hbciThreadInitialized = false;
 
     // Das Handle ist die eigentliche HBCI-Verbindung zum Server
     HBCIHandler handle = null;
@@ -432,9 +443,7 @@ Geschäftsvorfall-Codes:
         // In "props" koennen optional Kernel-Parameter abgelegt werden, die in der
         // Klasse
         // org.kapott.hbci.manager.HBCIUtils (oben im Javadoc) beschrieben sind.
-        Properties props = new Properties();
-        // hbci4j 4.x: init(Properties, HBCICallback)
-        HBCIUtils.init(props, new MyHBCICallback());
+        startHbciThread();
 
         /*
   private final static Map<Integer,String> settings = new HashMap<Integer,String>()
@@ -473,23 +482,29 @@ hbciHandle = new HBCIHandler(HBCIUtils.getParam("client.passport.hbciversion.def
         // automatisch neu erzeugt,
         // wenn der Parameter "client.passport.PinTan.init" den Wert "1" hat (siehe
         // unten).
-        // Wir speichern die Datei der Einfachheit halber im aktuellen Verzeichnis.
-        final File passportFile = new File(PassportURL);
-        File parent = passportFile.getParentFile();
-        if (parent != null && !parent.exists()) {
-            parent.mkdirs();
+        if (PassportURL == null || PassportURL.trim().length() == 0) {
+            throw new HBCI_Exception("Passport path is empty – set Passport/@url to an absolute path or leave blank for EXIST_HOME/docman-passports.");
         }
-        System.out.println("### passportURL '" + PassportURL + "' mode=" + Mode);
+        final File passportFile = new File(PassportURL).getAbsoluteFile();
+        File parent = passportFile.getParentFile();
+        if (parent != null && !parent.exists() && !parent.mkdirs()) {
+            throw new HBCI_Exception("Cannot create passport directory: " + parent.getAbsolutePath());
+        }
+        if (parent != null && !parent.canWrite()) {
+            throw new HBCI_Exception("Passport directory is not writable: " + parent.getAbsolutePath());
+        }
+        this.PassportURL = passportFile.getAbsolutePath();
+        System.out.println("### passportURL '" + PassportURL + "' mode=" + Mode + " auth=" + AuthType);
 
         // Wir setzen die Kernel-Parameter zur Laufzeit. Wir koennten sie alternativ
         // auch oben in "props" setzen.
         HBCIUtils.setParam("client.passport.default", "PinTan"); // Legt als Verfahren PIN/TAN fest.
         HBCIUtils.setParam("client.passport.PinTan.init", "1"); // Stellt sicher, dass der Passport initialisiert wird
-        HBCIUtils.setParam("client.passport.PinTan.filename", passportFile.getAbsolutePath());
+        HBCIUtils.setParam("client.passport.PinTan.filename", PassportURL);
 
-        // Erzeugen des Passport-Objektes.
-        // HBCIPassportDDV (für Chipkarte), HBCIPassportPinTan (für Zugang über das PIN/TAN-Verfahren), HBCIPassportRDHNew für Zugang über RDH mit Datei
-        passport = AbstractHBCIPassport.getInstance(passportFile);
+        // Erzeugen des Passport-Objektes (documented pattern: params + getInstance()).
+        // QR/photo-TAN (SecMech 955) can already surface during init; unwrap SCA.
+        passport = openPinTanPassport(passportFile);
 
         if (passport.getAccounts() == null || passport.getAccounts().length == 0)
             System.out.println("### passport is empty.");
@@ -502,11 +517,20 @@ hbciHandle = new HBCIHandler(HBCIUtils.getParam("client.passport.hbciversion.def
         // Das Land.
         passport.setCountry(Country);
 
-        // Server-Adresse angeben. Koennen wir entweder manuell eintragen oder direkt
-        // von HBCI4Java ermitteln lassen
+        // Server-Adresse: BLZ-Tabelle liefert oft "https://host/" – Hibiscus/DB erwarten host[/path].
         BankInfo info = HBCIUtils.getBankInfo(Blz.toString());
-        passport.setHost(info.getPinTanAddress());
-        // passport.setHost("fints.deutsche-bank.de");
+        String host = info != null ? info.getPinTanAddress() : null;
+        if (host != null) {
+            host = host.replaceFirst("(?i)^https?://", "");
+            if (host.endsWith("/")) {
+                // keep trailing slash – Deutsche Bank FinTS path is often "fints.deutsche-bank.de/"
+            }
+        }
+        if (host == null || host.trim().isEmpty()) {
+            throw new HBCI_Exception("No PinTan host for BLZ " + Blz);
+        }
+        passport.setHost(host);
+        messageHandler.sendMessage("HOST = " + host);
 
         // TCP-Port des Servers. Bei PIN/TAN immer 443, da das ja ueber HTTPS laeuft.
         passport.setPort(Integer.parseInt(Port.toString()));
@@ -521,8 +545,15 @@ hbciHandle = new HBCIHandler(HBCIUtils.getParam("client.passport.hbciversion.def
                 handle = new HBCIHandler(VERSION.getId(), passport);
             }
             catch (Exception e) {
-                messageHandler.sendMessage("Server HBCI-connect failed: " + e.toString() + ". Passport: " + passport);
-                return error(passport, handle, "Server HBCI-connect failed. ");
+                String causes = e.toString();
+                Throwable cur = e.getCause();
+                int depth = 0;
+                while (cur != null && depth++ < 8) {
+                    causes = causes + " | cause: " + cur.toString();
+                    cur = cur.getCause();
+                }
+                messageHandler.sendMessage("Server HBCI-connect failed: " + causes + ". Passport: " + passport);
+                return error(passport, handle, "Server HBCI-connect failed. " + causes);
             }
 
             messageHandler.sendMessage("HBCI-Server passport: " + passport);
@@ -574,19 +605,49 @@ hbciHandle = new HBCIHandler(HBCIUtils.getParam("client.passport.hbciversion.def
      * @throws Exception
      */
     public void close() {
+        try {
+            if (handle != null) {
+                handle.close();
+            }
+        } catch (Exception ignored) {
+        }
+        try {
+            if (passport != null) {
+                passport.close();
+            }
+        } catch (Exception ignored) {
+        } finally {
+            konto = null;
+            handle = null;
+            passport = null;
+            stopHbciThread();
+        }
+    }
 
-        HBCIUtils.done();
-        
-        konto = null;
+    private void startHbciThread() {
+        previousContextClassLoader = Thread.currentThread().getContextClassLoader();
+        // EXPath jars are not always visible to the request ClassLoader.
+        Thread.currentThread().setContextClassLoader(OnlineBankingAccount.class.getClassLoader());
+        Locale.setDefault(Locale.GERMANY);
+        Properties props = new Properties();
+        // hbci4j 4.x: per-thread client so concurrent eXist requests do not share
+        // a half-torn-down ResourceBundle (NPE in HBCI4JavaClient.tr).
+        HBCIUtils.initThread(props, new MyHBCICallback());
+        hbciThreadInitialized = true;
+    }
 
-        if (handle != null)
-            handle.close();
-
-        if (passport != null)
-            passport.close();
-
-        handle = null;
-        passport = null;
+    private void stopHbciThread() {
+        if (hbciThreadInitialized) {
+            try {
+                HBCIUtils.doneThread();
+            } catch (Exception ignored) {
+            }
+            hbciThreadInitialized = false;
+        }
+        if (previousContextClassLoader != null) {
+            Thread.currentThread().setContextClassLoader(previousContextClassLoader);
+            previousContextClassLoader = null;
+        }
     }
 
     /**
@@ -1243,6 +1304,66 @@ System.out.println("DEBUG: Jobstatus:" + job.getJobResult().getJobStatus());
                 .replace("\'", "&apos;");
     }
 
+
+    /**
+     * Opens a PinTan passport. Retries once after deleting an unreadable .dat file.
+     * Unwraps SCA_REQUIRED that hbci4j wraps as "kann kein Passport des Typs PinTan instanziieren".
+     */
+    private HBCIPassport openPinTanPassport(File passportFile) throws Exception {
+        try {
+            return AbstractHBCIPassport.getInstance();
+        } catch (Exception first) {
+            ScaRequiredException sca = findSca(first);
+            if (sca != null) {
+                throw sca;
+            }
+            // Corrupt / wrong-passphrase passport → delete and recreate once
+            if (passportFile.exists()) {
+                boolean deleted = passportFile.delete();
+                System.out.println("### passport recreate after failure deleted=" + deleted + " path="
+                        + passportFile.getAbsolutePath() + " err=" + rootMessage(first));
+                try {
+                    return AbstractHBCIPassport.getInstance();
+                } catch (Exception second) {
+                    sca = findSca(second);
+                    if (sca != null) {
+                        throw sca;
+                    }
+                    throw new HBCI_Exception(
+                            "kann kein Passport des Typs PinTan instanziieren (" + passportFile.getAbsolutePath()
+                                    + "): " + rootMessage(second),
+                            second);
+                }
+            }
+            throw new HBCI_Exception(
+                    "kann kein Passport des Typs PinTan instanziieren (" + passportFile.getAbsolutePath() + "): "
+                            + rootMessage(first),
+                    first);
+        }
+    }
+
+    private static ScaRequiredException findSca(Throwable t) {
+        Throwable cur = t;
+        while (cur != null) {
+            if (cur instanceof ScaRequiredException) {
+                return (ScaRequiredException) cur;
+            }
+            Throwable next = cur.getCause();
+            if (next == cur) {
+                break;
+            }
+            cur = next;
+        }
+        return null;
+    }
+
+    private static String rootMessage(Throwable t) {
+        Throwable cur = t;
+        while (cur.getCause() != null && cur.getCause() != cur) {
+            cur = cur.getCause();
+        }
+        return cur.toString();
+    }
 
     /**
      * Beendet das Programm mit der angegebenen Fehler-Meldung.
